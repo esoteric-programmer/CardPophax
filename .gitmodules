@@ -1,0 +1,3 @@
+[submodule "payloads/audio-dumper/upstream"]
+	path = payloads/audio-dumper/upstream
+	url = https://github.com/FIX94/gameboy-audio-dumper.git

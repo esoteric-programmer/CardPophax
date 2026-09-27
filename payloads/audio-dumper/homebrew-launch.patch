@@ -1,0 +1,133 @@
+--- a/sender/sender.asm
++++ b/sender/sender.asm
+@@ -2,40 +2,26 @@
+ ;
+ ; This software may be modified and distributed under the terms
+ ; of the MIT license.  See the LICENSE file for details.
+-
+-include "charmap.asm"
+-
+-SECTION "WRAM",ROM0[RAMOFFSET]
++;
++; homebrew-launch port: upstream sender/sender.asm (FIX94/gameboy-audio-dumper)
++; built RAM-resident at $C000 with a LOAD block (modern rgbds), and the APU
++; kept off while the user swaps carts (audioOn after the header check), and
++; SELECT at any prompt returns to the loader's menu.
++
++INCLUDE "charmap.asm"
++SECTION "wrap", ROM0[$150]
++LOAD "dump", WRAM0[$C000]
+ 
+ init:
+ 	di
+ 	; for safety
+ 	xor a
+ 	ld [$0000], a
+-	; reset audio regs
+-	ldh [$FF26], a
+-	ld a, $80
++	; APU off while the user swaps carts (homebrew-launch patch): a live wave
++	; channel at 100% is the suspected cause of GBC resets on cart pull/insert.
++	; audioOn runs once the new cart has passed the header check.
+ 	ldh [$FF26], a
+-	; set wav to low
+-	ld h, $FF
+-	ld l, $30
+-	xor a
+-clearsamples:
+-	ld [hl+], a
+-	bit 6, l
+-	jr z, clearsamples
+-	; wav 100% volume
+-	ld a, $20
+-	ldh [$FF1C], a
+-	; freq of 7F0 (probably not needed right
+-	; now because its only one solid output)
+-	;ld a, $F0
+-	;ldh [$FF1D], a
+-	; enable wav dac and trigger
+-	ld a, $87
+-	ldh [$FF1A], a
+-	ldh [$FF1E], a
+-	; audio ready, update video
++	; update video
+ 	call waitVBlank
+ 	; turn off lcd
+ 	xor a
+@@ -95,8 +81,9 @@
+ 	call waitA
+ 	jr promptinsertcart
+ checkok:
+-	; cart looks good, prompt
+-	; to start sending
++	; cart looks good: sound on now
++	; (see init), prompt to start sending
++	call audioOn
+ 	ld hl, okmsg
+ 	call drawStatus
+ waitokprompt:
+@@ -112,14 +99,42 @@
+ 	; A pressed, send ROM
+ 	call sendROM
+ end:
+-	; done dumping, wait for
+-	; another cart or turning off
++	; done dumping: APU off again for
++	; the next swap, wait for another
++	; cart or turning off
++	xor a
++	ldh [$FF26], a
+ 	ld hl, donemsg
+ 	call drawStatus
+ 	call waitA
+ 	; back to the beginning
+ 	jp promptinsertcart
+ 
++; upstream's init audio setup, unchanged: output a solid low level on the
++; wave channel (the sender modulates volume via NR50/NR51 per nibble)
++audioOn:
++	; reset audio regs
++	xor a
++	ldh [$FF26], a
++	ld a, $80
++	ldh [$FF26], a
++	; set wav to low
++	ld h, $FF
++	ld l, $30
++	xor a
++clearsamples:
++	ld [hl+], a
++	bit 6, l
++	jr z, clearsamples
++	; wav 100% volume
++	ld a, $20
++	ldh [$FF1C], a
++	; enable wav dac and trigger
++	ld a, $87
++	ldh [$FF1A], a
++	ldh [$FF1E], a
++	ret
++
+ readButtons:
+ 	; enable button bits
+ 	ld a, $10
+@@ -134,7 +149,13 @@
+ 	; disable button bits
+ 	ld a, $30
+ 	ldh [$FF00], a
+-	ret
++	; SELECT: back to the homebrew
++	; loader's menu (WRAM bank 7)
++	bit 2, b
++	ret nz
++	ld a, 7
++	ldh [$FF70], a
++	jp $D003
+ 
+ waitA:
+ 	call readButtons
+@@ -467,3 +488,4 @@
+ 	db "Done! Press A    ", $00
+ 	db "to return to the ", $00
+ 	db "first Screen     ", $00
++ENDL

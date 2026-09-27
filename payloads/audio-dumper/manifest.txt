@@ -1,0 +1,10 @@
+# Audio Dumper payload manifest (see docs/05-loader-protocol.md §6)
+# A multi-segment RAM-resident payload. Entry runs with the cart still inserted,
+# IME=0; segments are applied with the LCD OFF (two of them are VRAM).
+entry  = 0xC000
+flags  = LCD_OFF
+# segment  dest     file       bytes   note
+segment    0xC000   c000.bin   940     dumper code (RAMOFFSET=$C000), entry point
+segment    0x8800   8800.bin   1024    font tiles (VRAM bank 0)
+segment    0x8E00   8e00.bin   512     font tiles (VRAM bank 0)
+# total payload = 2476 bytes
