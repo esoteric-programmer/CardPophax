@@ -9,6 +9,8 @@ bootstrap in RAM, pull a resident loader over a custom IR link, show a menu,
 stream the chosen payload and jump to it — all from a standalone ATtiny85, with
 no PC, no flashcart and no link cable once the board is built.
 
+https://github.com/user-attachments/assets/29bf8663-e8c6-4c92-b796-cf61f9d05cbf
+
 **The ATtiny85 board is the project.** A PC is only needed to build the
 firmware and flash it. The same code also runs against a patched
 VisualBoyAdvance. That emulator path (`gbcpop` + `vba-ir-patch/`) is a local
