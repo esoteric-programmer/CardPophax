@@ -1,5 +1,7 @@
 # GB side: Stage-0 bootstrap, resident loader, and the headless test builds.
-#   make            bootstrap.bin + loader.bin
+#   make            bootstrap.bin + loader.bin + loader_pi.bin
+#                   (loader_pi.bin: the Raspberry Pi launcher's loader with the
+#                   scrolling payload list, -D PI_MENU; the ATtiny uses loader.bin)
 #   make DEBUG=1    the same, the bootstrap recolouring the screen per chunk
 #                   (SCREEN_STATUS: teal = chunk OK, red = copy failed)
 #   make tests      loader_test.bin (auto-picks payload 1) + boottest.gb
@@ -7,7 +9,7 @@ RGBASM  ?= rgbasm
 RGBLINK ?= rgblink
 RGBFIX  ?= rgbfix
 
-all: bootstrap.bin loader.bin
+all: bootstrap.bin loader.bin loader_pi.bin
 tests: loader_test.bin boottest.gb
 .PHONY: all tests clean FORCE
 
@@ -34,6 +36,12 @@ loader.bin: loader.asm $(COMMON)
 	$(RGBLINK) -o loader.gb -m loader.map loader.o
 	$(call extract,loader,loader)
 	@rm -f loader.o loader.gb loader.map
+
+loader_pi.bin: loader.asm $(COMMON)
+	$(RGBASM)  -DPI_MENU -o loader_pi.o loader.asm
+	$(RGBLINK) -o loader_pi.gb -m loader_pi.map loader_pi.o
+	$(call extract,loader_pi,loader)
+	@rm -f loader_pi.o loader_pi.gb loader_pi.map
 
 loader_test.bin: loader.asm $(COMMON)
 	$(RGBASM)  -DTEST_CHOICE=1 -o lt.o loader.asm

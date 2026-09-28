@@ -13,6 +13,8 @@ forms:
   `flags` may request the LCD be off during apply (needed for VRAM segments).
 
 `gbcpop attiny-inc` (and the `loader`/`loadertest` commands) accept either form.
+The Raspberry Pi launcher also takes a whole directory of them and shows it as a
+scrolling menu ([chapter 11](11-raspberry-pi.md)).
 
 ## The audio dumper
 

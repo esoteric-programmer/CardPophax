@@ -32,6 +32,8 @@
 #include <unistd.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 /*
  * Two GPIO backends.
@@ -51,6 +53,7 @@
  * Everything above tx_bytes()/recv_byte() is identical either way.
  */
 #include <time.h>
+#include <stdarg.h>
 #ifdef USE_PIGPIO
 #include <pigpio.h>
 #endif
@@ -94,6 +97,11 @@ static int  cfg_rx_gpio   = 18;
 static int  cfg_tx_invert = 0;   /* 1: LED is on when the GPIO is low    */
 static int  cfg_rx_invert = 1;   /* 1: detector reads low when lit       */
 static int  cfg_rx_pull   = 2;   /* 0 off, 1 down, 2 up                  */
+static int  cfg_led_gpio  = 22;  /* status LED (blue D1, J2 pin 15; direct
+                                    backend only), -1 = none              */
+static void led_set(int on);     /* per backend, below */
+static int  cfg_btn_gpio  = 27;  /* shutdown button (SW1, J2 pin 13; `launch`,
+                                    direct backend only), -1 = none      */
 static int  cfg_verbose   = 0;
 
 #ifdef USE_SHM
@@ -305,6 +313,23 @@ static void go_realtime(void)
     if (sched_setscheduler(0, SCHED_FIFO, &sp) < 0)
         fprintf(stderr, "warning: SCHED_FIFO %d failed (%s) -- expect dropped bytes\n",
                 cfg_rt_prio, strerror(errno));
+}
+
+/*
+ * Real-time priority only while the Game Boy is talking. The waits for it (a
+ * handshake that may take seconds, a menu choice, the launcher's idle loop) run
+ * at normal priority: a thread spinning at SCHED_FIFO for long starves the
+ * per-CPU kernel threads (timers, RCU: SCHED_FIFO 1 on PREEMPT_RT), and after a
+ * minute the watchdog resets the Pi. A byte garbled by preemption while waiting
+ * is simply retried (a missed probe, the loader's second REQ).
+ */
+static void set_realtime(int on)
+{
+    struct sched_param sp;
+    if (cfg_rt_prio <= 0) return;
+    memset(&sp, 0, sizeof sp);
+    sp.sched_priority = on ? cfg_rt_prio : 0;
+    sched_setscheduler(0, on ? SCHED_FIFO : SCHED_OTHER, &sp);
 }
 
 #ifdef USE_PIGPIO
@@ -1196,19 +1221,52 @@ static int hw_init(void)
     gp_write(0);
     gp_mode_in(cfg_rx_gpio);
     gp_set_pull(cfg_rx_gpio, cfg_rx_pull);
+    if (cfg_led_gpio >= 0) {
+        gp_mode_out(cfg_led_gpio);
+        led_set(0);
+    }
+    if (cfg_btn_gpio >= 0) {
+        gp_mode_in(cfg_btn_gpio);
+        gp_set_pull(cfg_btn_gpio, 2);        /* pull-up: SW1 pulls it to GND */
+    }
     go_realtime();
     return 0;
 }
 
 static uint32_t hw_now(void) { return now_us(); }
 
+/*
+ * Status LED (the board's blue D1 through R1, on J2 pin 15), used as the ATtiny
+ * uses it: lit while we transmit and the GBC answers (a Card Pop! sync, the last
+ * chunk ACKed); dark while listening for an ACK, after a copy without ACK (where
+ * the ATtiny shows red), while the menu waits, and when done.
+ */
+#define HAVE_LED 1
+static void led_set(int on)
+{
+    if (cfg_led_gpio < 0 || !g_gpio) return;
+    g_gpio[(on ? GPSET0 : GPCLR0) + cfg_led_gpio / 32] = 1u << (cfg_led_gpio & 31);
+}
+
+/* The board's button SW1 (the ATtiny's reset, J2 pin 13) pulls GPIO27 to GND
+ * against the Pi's pull-up. 1 while it is pressed. */
+static int button_held(void)
+{
+    if (cfg_btn_gpio < 0 || !g_gpio) return 0;
+    return !((g_gpio[GPLEV0 + cfg_btn_gpio / 32] >> (cfg_btn_gpio & 31)) & 1);
+}
+
 static void hw_close(void)
 {
-    if (g_gpio) gp_write(0);
+    if (g_gpio) { gp_write(0); led_set(0); }
     if (g_memfd >= 0) close(g_memfd);
 }
 
 #endif /* USE_PIGPIO */
+
+#ifndef HAVE_LED
+static void led_set(int on) { (void)on; }   /* the status LED: direct backend only */
+#endif
 
 #ifndef USE_SHM
 /* GPIO backends start every byte BYTE_GAP_US after the call, well inside the
@@ -1226,13 +1284,16 @@ static int send_byte(uint8_t b) { return tx_bytes(&b, 1); }
 static int sync_as_sender(int attempts, uint32_t timeout_us)
 {
     int i;
+    set_realtime(0);               /* waiting: normal priority (set_realtime) */
     for (i = 0; i < attempts; i++) {
         if (send_byte(0xAA) < 0) return -1;
         int r = recv_byte(timeout_us);
-        if (r == 0x33) return 0;
+        if (r == 0x33) { set_realtime(1); led_set(1); return 0; }   /* the GBC answers */
         g_stats.resync++;
-        LOG("sync_as_sender: attempt %d got %d\n", i + 1, r);
+        if (r >= 0)                /* no answer at all (no GBC there) is not news */
+            LOG("sync_as_sender: attempt %d got $%02X\n", i + 1, r);
     }
+    led_set(0);
     return -1;
 }
 
@@ -1243,10 +1304,11 @@ static int sync_as_sender(int attempts, uint32_t timeout_us)
 static int sync_as_receiver(uint32_t timeout_us)
 {
     uint32_t left = timeout_us;
+    set_realtime(0);               /* waiting: normal priority (set_realtime) */
     for (;;) {
         uint32_t slice = left > 50000 ? 50000 : left;
         int r = recv_byte(slice);
-        if (r == 0xAA) { tx_reply_next(); return send_byte(0x33); }
+        if (r == 0xAA) { set_realtime(1); tx_reply_next(); led_set(1); return send_byte(0x33); }
         if (r >= 0) { LOG("sync_as_receiver: saw $%02X\n", r); continue; }
         if (left <= slice) return -1;
         left -= slice;
@@ -2097,6 +2159,58 @@ static int cmd_upload(void)
 /* shm (VBA) backend only; timing constants co-tuned with              */
 /* gb/hardware.inc and attiny/main-tcg-loader.asm (docs/05 §2).         */
 /* ================================================================== */
+#if defined(USE_SHM) || (!defined(USE_PIGPIO) && !defined(USE_WIRINGPI))
+/* A payload directory (`gbcpop loader ... <dir>`): every <name>.bin in it,
+ * and every subdirectory with a manifest.txt or a <subdir>.bin (the layout of
+ * this repository's payloads/, once built), sorted by name. Anything else is
+ * skipped. Appends to list[*n] (strings are malloc'd); returns 0, or -1. */
+static int is_file(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static int is_dir(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int scan_payload_dir(const char *dir, const char **list, int *n, int max)
+{
+    struct dirent **ent;
+    int k, m = scandir(dir, &ent, NULL, alphasort);
+    if (m < 0) { ERR("cannot read payload directory %s\n", dir); return -1; }
+    for (k = 0; k < m; k++) {
+        const char *e = ent[k]->d_name;
+        size_t el = strlen(e);
+        char path[600], sub[1200];
+        snprintf(path, sizeof path, "%s/%s", dir, e);
+        sub[0] = 0;
+        if (e[0] == '.') { }
+        else if (el > 4 && !strcmp(e + el - 4, ".bin") && is_file(path))
+            snprintf(sub, sizeof sub, "%s", path);
+        else if (is_dir(path)) {
+            snprintf(sub, sizeof sub, "%s/manifest.txt", path);
+            if (!is_file(sub)) {
+                snprintf(sub, sizeof sub, "%s/%s.bin", path, e);
+                if (!is_file(sub)) {
+                    if (cfg_verbose) fprintf(stderr, "  skipped %s (no manifest.txt or %s.bin)\n", path, e);
+                    sub[0] = 0;
+                }
+            }
+        }
+        if (sub[0]) {
+            if (*n >= max) { ERR("too many payloads (max %d)\n", max); return -1; }
+            list[(*n)++] = strdup(sub);
+        }
+        free(ent[k]);
+    }
+    free(ent);
+    return 0;
+}
+#endif
+
 /* The loader's mark/space link (docs/05) exists in the SHM build (VBA, GB
  * clock) and in the direct GPIO backend (real time, the Pi's system timer).  */
 #if defined(USE_SHM) || (!defined(USE_PIGPIO) && !defined(USE_WIRINGPI))
@@ -2392,17 +2506,26 @@ static int ms_wait_hello(double tmo_us)
 #endif /* USE_SHM / HAVE_MS_LINK */
 
 #ifdef HAVE_MS_LINK
-/* Stage 0: upload a raw blob to $C000 via the Card Pop! RPC, then jump. */
-static int loader_stage0(const uint8_t *blob, int n)
+/* Stage 0 once the TCG has answered: RPC-write a raw blob to $C000 in 128-byte
+ * writes, each tried up to `tries` times (the ATtiny: 3), then jump to it. */
+static int stage0_upload(const uint8_t *blob, int n, int tries)
 {
-    int off;
-    if (sync_as_sender(400, RX_LONG_US / 400) < 0) { ERR("stage0: no $AA\n"); return -1; }
+    int off, t;
     for (off = 0; off < n; off += 128) {
         int c = n - off < 128 ? n - off : 128;
-        if (remote_write(blob + off, (uint16_t)(0xC000 + off), c) < 0) return -1;
+        for (t = 0; t < tries; t++)
+            if (remote_write(blob + off, (uint16_t)(0xC000 + off), c) == 0) break;
+        if (t == tries) return -1;
     }
     if (remote_call(0xC000, 0, 0) < 0) return -1;   /* jp $C000 -> bootstrap */
     return 0;
+}
+
+/* Stage 0: wait for the TCG (~20 s), upload the bootstrap, jump. */
+static int loader_stage0(const uint8_t *blob, int n)
+{
+    if (sync_as_sender(400, RX_LONG_US / 400) < 0) { ERR("stage0: no $AA\n"); return -1; }
+    return stage0_upload(blob, n, 1);
 }
 
 static int read_file(const char *path, uint8_t *buf, int max)
@@ -2477,6 +2600,33 @@ static int parse_payload(const char *path, struct Payload *p)
     return 0;
 }
 
+/* The payload list of `loader` / `launch`: files as given, directories scanned
+ * (scan_payload_dir). A payload that cannot be used (missing or empty files) is
+ * left out with a warning, so it never appears in the menu. The strings are
+ * malloc'd; a call frees the previous list first. Returns the count, or -1. */
+static int collect_payloads(char **specs, int nspec, const char **pl, int max)
+{
+    static struct Payload chk;
+    static int held;
+    int n = 0, j = 0, k;
+    for (k = 0; k < held; k++) free((void *)pl[k]);
+    held = 0;
+    for (k = 0; k < nspec; k++) {
+        if (is_dir(specs[k])) { if (scan_payload_dir(specs[k], pl, &n, max) < 0) return -1; }
+        else if (n < max) pl[n++] = strdup(specs[k]);
+        else { ERR("too many payloads (max %d)\n", max); return -1; }
+    }
+    for (k = 0; k < n; k++) {
+        if (parse_payload(pl[k], &chk) < 0 || chk.bodylen == 0) {
+            fprintf(stderr, "  skipped %s: not a usable payload\n", pl[k]);
+            free((void *)pl[k]);
+        }
+        else pl[j++] = pl[k];
+    }
+    held = j;
+    return j;
+}
+
 /* stream IDs: frame header byte after START (build_frame, recvstream.inc) */
 #define ID_LOADER   'L'
 #define ID_FONT     'F'
@@ -2519,7 +2669,9 @@ static int wait_req(uint32_t tmo_us)
 {
     uint32_t t0 = now_us();
     int r = -1;
+    set_realtime(0);               /* waiting for a person: normal priority */
     while ((uint32_t)(now_us() - t0) < tmo_us && r < 0) r = ms_rx_byte();
+    set_realtime(1);
     return r;
 }
 
@@ -2687,13 +2839,15 @@ static int send_stream(const uint8_t *data, int n, int tries, int rle, uint8_t i
                 fprintf(stderr, "\r  stream '%c': receiver stopped listening at chunk %d\n", id, seq);
                 return last ? 0 : -1;
             }
+            led_set(0);                          /* dark while the GB may ACK */
             ack = ms_rx_byte_gbtime(30000.0);    /* 30 ms of GB time */
             if (ack == ack_want && c == 0 && getenv("GBCPOP_TEST_REPEAT"))
                 continue;   /* test: act as if this ACK was lost -> the GB must
                              * re-ACK the repeat without storing it */
-            if (ack == ack_want) { acked = 1; break; }
+            if (ack == ack_want) { acked = 1; led_set(1); break; }
             if (last && ack >= 1 && ack <= req_max) {
                 fprintf(stderr, "\r  stream '%c': REQ %d arrived instead of the last ACK\n", id, ack);
+                led_set(1);
                 return ack;
             }
             if (ack >= 0)
@@ -2854,6 +3008,7 @@ static int build_menu_stream_safe(uint8_t *out, const char **payloads, int npayl
     }
 }
 
+#ifdef USE_SHM   /* the ATtiny's menu: VBA test bench (the ATtiny has it in flash) */
 /* Menu: font + text as two streams, sent right after the loader; the loader
  * draws them, then waits for the button. Returns the REQ id if it arrived
  * during the menu's ACK windows, 0 if not (then wait for it), -1 on failure. */
@@ -2864,6 +3019,70 @@ static int send_menu(const char **payloads, int npayload)
     if (send_stream(font, fn, TRIES, 1, ID_FONT, 0) < 0) return -1;
     return send_stream(menu, mn, TRIES, 1, ID_MENU, npayload < 1 ? 0 : npayload > 3 ? 3 : npayload);
 }
+#endif
+
+#ifndef USE_SHM  /* the Raspberry Pi launcher */
+/* Raspberry Pi menu stream (ID 'M', for gb/loader_pi.bin): the static text
+ * as {row, col, ASCII..., 0}*, $FF, then the payload list as count,
+ * {ASCII..., 0} * count. 20x18 visible cells; the loader draws the list itself
+ * (rows 6/8/10, "n/N" on row 13), so the text stays clear of those rows. */
+#define PI_MENU_MAX   768        /* = MENU_MAX in gb/loader.asm with PI_MENU */
+#define PI_NAME_MAX   17         /* = NAME_MAX: list cells from col 3 */
+/* Returns the length, or -1 if the list does not fit the loader's buffer. */
+static int build_pi_menu_stream(uint8_t *out, const char **payloads, int npayload)
+{
+    char name[40];
+    int o = 0, i;
+    o = menu_put(out, o, 1, 2, "HOMEBREW LOADER");
+    if (npayload == 0) o = menu_put(out, o, 4, 3, "NO PAYLOADS");   /* not a list row */
+    o = menu_put(out, o, 15, 1, "UP/DOWN: CHOOSE");
+    o = menu_put(out, o, 16, 1, "A: LAUNCH");
+    o = menu_put(out, o, 17, 1, "SELECT: REBOOT");
+    out[o++] = 0xFF;
+    out[o++] = (uint8_t)npayload;
+    for (i = 0; i < npayload; i++) {
+        payload_name(payloads[i], name, PI_NAME_MAX + 1);
+        if (o + (int)strlen(name) + 1 > PI_MENU_MAX - 16) {   /* room for the ACK padding */
+            ERR("menu: %d payloads do not fit the loader's %d-byte list (stopped at %s)\n",
+                npayload, PI_MENU_MAX, payloads[i]);
+            return -1;
+        }
+        memcpy(out + o, name, strlen(name) + 1);
+        o += (int)strlen(name) + 1;
+    }
+    return o;
+}
+
+/* The menu stream, padded after the list (the GB stops reading there) until
+ * its last chunk's ACK (CK_lo) cannot be mistaken for a REQ id 1..npayload
+ * (send_stream). Returns the length, or -1. */
+static int build_pi_menu_stream_safe(uint8_t *out, const char **payloads, int npayload)
+{
+    uint8_t fr[FRAME_MAX];
+    int mn = build_pi_menu_stream(out, payloads, npayload), fn, lastoff;
+    if (mn < 0) return -1;
+    for (;;) {
+        lastoff = (mn - 1) / CHUNK_RAW * CHUNK_RAW;
+        fn = build_frame(out + lastoff, mn - lastoff, 1, ID_MENU,
+                         (uint8_t)(lastoff / CHUNK_RAW | 0x80), fr, NULL);
+        if (fr[fn - 2] == 0 || fr[fn - 2] > npayload) return mn;
+        if (mn >= PI_MENU_MAX) { ERR("menu: no room to pad the last chunk\n"); return -1; }
+        out[mn++] = 0x10;
+    }
+}
+
+/* The Raspberry Pi menu: font + the list menu, sent right after loader_pi.bin;
+ * the loader draws them, then waits for the choice. Returns the REQ id if it arrived
+ * during the menu's ACK windows, 0 if not (then wait for it), -1 on failure. */
+static int send_pi_menu(const char **payloads, int npayload)
+{
+    static uint8_t font[3 + 8 * 64], menu[PI_MENU_MAX];
+    int fn = build_font_stream(font), mn = build_pi_menu_stream_safe(menu, payloads, npayload);
+    if (mn < 0) return -1;
+    if (send_stream(font, fn, TRIES, 1, ID_FONT, 0) < 0) return -1;
+    return send_stream(menu, mn, TRIES, 1, ID_MENU, npayload < 1 ? 0 : npayload);
+}
+#endif
 
 /* Write one frame (or raw blob) as an avra .db table + length .equ. */
 static void inc_table(FILE *f, const char *label, const char *lenname,
@@ -2968,8 +3187,13 @@ static int cmd_loader(const char *boot_path, const char *loader_path,
      * any time after the menu appears is safe (do_transfer waits for the line
      * to be idle before REQ; send_stream takes a REQ in place of the menu ACK). */
     printf("Stage 1: feeding %d-byte loader (chunked, ACKed)...\n", ln);
+#ifdef USE_SHM
     fprintf(stderr, "  >>> when the menu appears, press A "
                     "(payload 1) / B (2) / Start (3) <<<\n");
+#else
+    fprintf(stderr, "  >>> when the menu appears: UP/DOWN choose, A launches, "
+                    "SELECT restarts the Game Boy <<<\n");
+#endif
     ms_idle(20000.0);
     if (send_stream(loader, ln, TRIES, 0, ID_LOADER, 0) < 0) {   /* bootstrap has no RLE */
         ERR("loader feed failed\n");
@@ -2977,7 +3201,12 @@ static int cmd_loader(const char *boot_path, const char *loader_path,
     }
 
     printf("Stage 1: sending menu font (%d glyphs) + menu text...\n", FONT_COUNT);
-    choice = send_menu(payloads, npayload);
+#ifdef USE_SHM
+    choice = send_menu(payloads, npayload);        /* VBA: the ATtiny's menu, loader.bin */
+#else
+    choice = send_pi_menu(payloads, npayload);     /* Raspberry Pi: the list, loader_pi.bin */
+#endif
+    led_set(0);                                    /* menu shown: dark while the user chooses */
     if (choice < 0) { ERR("menu transfer failed\n"); return 1; }
 
     /* The loader's menu waits for a joypad press, so REQ can arrive seconds later
@@ -3001,7 +3230,10 @@ static int cmd_loader(const char *boot_path, const char *loader_path,
         if (parse_payload(payloads[choice - 1], &pl) < 0) return 1;
         printf("  sending '%s': %d seg(s), %d body bytes, entry $%04X, flags $%02X\n",
                payloads[choice - 1], pl.nseg, pl.bodylen, pl.entry, pl.flags);
-        if (send_payload_frame(&pl) == 0) {
+        led_set(1);                                /* sending the payload */
+        int sent = send_payload_frame(&pl);
+        led_set(0);
+        if (sent == 0) {
             printf("Stage 3: '%s' delivered; the loader has applied it and jumped.\n",
                    payloads[choice - 1]);
             printf("  listening for the next REQ (SELECT in the payload returns to the "
@@ -3022,6 +3254,116 @@ static int cmd_loader(const char *a, const char *b, const char **c, int d)
 {
     (void)a; (void)b; (void)c; (void)d;
     ERR("the 'loader' command needs the SHM (VBA) or the direct GPIO build (plain make)\n");
+    return 1;
+}
+static int collect_payloads(char **specs, int nspec, const char **pl, int max)
+{ (void)specs; (void)nspec; (void)pl; (void)max; return 0; }
+#endif
+
+#if defined(HAVE_MS_LINK) && !defined(USE_SHM)
+/*
+ * gbcpop launch <bootstrap.bin> <loader_pi.bin> [payload|dir ...]
+ * The Raspberry Pi launcher: the ATtiny's idle loop (docs/06), running until
+ * Ctrl-C. It keeps no state about the Game Boy; every pass
+ *   1. probes for the TCG's Card Pop! screen: $AA up to PROBE_TRIES times,
+ *      ~33 ms apart; on $33 -> Stage 0 + 1 (bootstrap, loader, menu);
+ *   2. else listens ~0.4 s for a REQ from the loader's menu -> Stage 2.
+ * The loader sends its REQ only after ~66 ms of dark, which the probes' gaps
+ * never give, so it always lands in step 2. The payload directory is scanned
+ * again for every menu; a REQ refers to the list sent last. Unanswered probes
+ * are not logged.
+ */
+#define PROBE_TRIES   12
+#define PROBE_WAIT_US 32000u       /* + the $AA byte itself: ~33 ms per probe */
+#define REQ_SLOTS     12           /* x ~30 ms (MS_RX_TMO_US): ~0.4 s */
+
+/* one line of the launcher's log, with the time */
+static void launch_log(const char *fmt, ...)
+{
+    char ts[16];
+    time_t t = time(NULL);
+    struct tm tm;
+    va_list ap;
+    localtime_r(&t, &tm);
+    strftime(ts, sizeof ts, "%H:%M:%S", &tm);
+    printf("%s  ", ts);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+}
+
+static void launch_payload(const char *path, int id)
+{
+    static struct Payload p;
+    int r;
+    launch_log("request %d: %s", id, path);
+    if (parse_payload(path, &p) < 0) return;   /* the loader asks again, then shows its menu */
+    led_set(1);                                /* sending the payload */
+    r = send_payload_frame(&p);
+    led_set(0);
+    launch_log(r == 0 ? "sent; the Game Boy runs it" : "failed; the Game Boy goes back to its menu");
+}
+
+static int cmd_launch(const char *boot_path, const char *loader_path, char **specs, int nspec)
+{
+    static uint8_t boot[512], loader[4096];
+    static const char *pl[255];
+    int bn = read_file(boot_path, boot, sizeof boot);
+    int ln = read_file(loader_path, loader, sizeof loader);
+    int npl, k, r;
+    if (bn <= 0 || ln <= 0) return 1;
+    if (bn > 512) { ERR("bootstrap %d B > 512\n", bn); return 1; }
+    if ((npl = collect_payloads(specs, nspec, pl, 255)) < 0) return 1;
+    printf("Launcher running (Ctrl-C stops): %d payload%s. Put the TCG on Card Pop!\n"
+           "(don't press A); a Game Boy in the loader's menu is served as well.\n",
+           npl, npl == 1 ? "" : "s");
+    for (;;) {
+        /* 1. probe for the TCG; SW1 is looked at before every probe and every
+         *    listen slot below (~33 ms), so any press is seen */
+        for (k = 0, r = -1; k < PROBE_TRIES && r < 0 && !button_held(); k++)
+            r = sync_as_sender(1, PROBE_WAIT_US);
+        if (button_held()) {                   /* SW1: shut the Pi down cleanly */
+            launch_log("button pressed: shutting the Pi down");
+            led_set(1);                        /* acknowledged: the blue LED for 1 s */
+            sleep(1);
+            led_set(0);
+            if (system("poweroff") != 0) { ERR("poweroff failed\n"); return 1; }
+            return 0;
+        }
+        if (r == 0) {
+            if ((r = collect_payloads(specs, nspec, pl, 255)) >= 0) npl = r;
+            launch_log("TCG answered: bootstrap, loader and a menu of %d payload(s)", npl);
+            r = -1;
+            if (stage0_upload(boot, bn, 3) == 0) {
+                ms_idle(20000.0);              /* the bootstrap waits for vblank first */
+                if (send_stream(loader, ln, TRIES, 0, ID_LOADER, 0) == 0)
+                    r = send_pi_menu(pl, npl);
+            }
+            led_set(0);                        /* menu shown, or the round failed */
+            if (r < 0) {
+                launch_log("round failed; trying again");
+                set_realtime(0);
+                ms_idle(1000000.0);
+                continue;
+            }
+            launch_log("menu shown");
+            if (r > 0 && r <= npl) launch_payload(pl[r - 1], r);
+            continue;
+        }
+        /* 2. listen for a menu choice (normal priority: sync_as_sender left it there) */
+        for (k = 0; k < REQ_SLOTS && !button_held(); k++) {
+            r = ms_rx_byte();
+            if (r >= 1 && r <= npl) { set_realtime(1); launch_payload(pl[r - 1], r); break; }
+        }
+    }
+    return 0;
+}
+#else
+static int cmd_launch(const char *a, const char *b, char **c, int d)
+{
+    (void)a; (void)b; (void)c; (void)d;
+    ERR("'launch' is the Raspberry Pi launcher: it needs the direct GPIO build (plain make)\n");
     return 1;
 }
 #endif
@@ -3472,6 +3814,14 @@ static int cmd_selftest(void)
     printf("RX  BCM %d (%s, pull %s)\n", cfg_rx_gpio,
            cfg_rx_invert ? "active low" : "active high",
            cfg_rx_pull == 2 ? "up" : cfg_rx_pull == 1 ? "down" : "off");
+#ifdef HAVE_LED
+    if (cfg_led_gpio >= 0) {
+        uint32_t t0 = now_us();
+        printf("LED BCM %d (status): lit for 1 s and during the loopback passes\n", cfg_led_gpio);
+        led_set(1);
+        while ((uint32_t)(now_us() - t0) < 1000000u) { }
+    }
+#endif
 
     for (i = 0; i < 8; i++) {
         int on_hits = 0, off_hits = 0, k;
@@ -3486,6 +3836,7 @@ static int cmd_selftest(void)
         if (lit > 80 && dark < 20) saw_change = 1;
     }
     gp_write(0);
+    led_set(0);
 
     if (saw_change)
         printf("\nLoopback looks good: the detector follows the LED.\n");
@@ -3619,9 +3970,15 @@ static void usage(void)
 "\n"
 "  upload                install the resident bridge (payload.bin) and run it\n"
 "  run <file> [addr]     upload a raw WRAM image (default $C000), verify, jump\n"
-"  loader <bootstrap.bin> <loader.bin> [payload ...]\n"
-"                        full launch: bootstrap, loader, menu, then the payload\n"
-"                        picked on the GBC (A = 1st, B = 2nd, START = 3rd)\n"
+"  launch <bootstrap.bin> <loader_pi.bin> [payload|dir ...]\n"
+"                        the Raspberry Pi launcher: like the ATtiny, runs until\n"
+"                        Ctrl-C and serves the TCG's Card Pop! screen as well as\n"
+"                        the loader's menu; pressing SW1 powers the Pi off\n"
+"                        (docs/11)\n"
+"  loader <bootstrap.bin> <loader.bin> [payload|dir ...]\n"
+"                        full launch: bootstrap, loader, a menu of the payloads\n"
+"                        (a dir: its *.bin and payload subdirs), then the one\n"
+"                        chosen on the GBC (UP/DOWN, A; SELECT restarts it)\n"
 "  bridge <sub> ...      ping | header | read <bank> <addr> <len> |\n"
 "                        mapper <addr> <val> | halt\n"
 "  swap-dump <file>      upload, prompt for the cartridge swap, dump its SRAM\n"
@@ -3643,6 +4000,10 @@ static void usage(void)
 "  --rx-invert     the detector reads low when light is present (the default)\n"
 "  --rx-active-high  the detector reads high when light is present\n"
 "  --rx-pull <m>   up | down | off for the detector input (default up)\n"
+"  --led <gpio>    status LED, BCM numbering (default 22; direct backend),\n"
+"                  lit while sending with the GBC answering; --led off: none\n"
+"  --button <gpio> shutdown button for `launch`, BCM (default 27; direct\n"
+"                  backend): pressed -> the Pi powers off; --button off: none\n"
 "  --name <text>   trainer name we present (default RASPI)\n"
 "  --addcard <a>   AddCardToCollection address ($1CCE EU, $1D6E US)\n"
 "  --stub-at <a>   where \"homebrew\" parks its stub (default $C300)\n"
@@ -3703,6 +4064,14 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--yes"))        opt_yes = 1;
         else if (!strcmp(argv[i], "--rt-prio") && i + 1 < argc) cfg_rt_prio = (int)parse_num(argv[++i]);
         else if (!strcmp(argv[i], "--rx-active-high")) cfg_rx_invert = 0;
+        else if (!strcmp(argv[i], "--button") && i + 1 < argc) {
+            const char *v = argv[++i];
+            cfg_btn_gpio = !strcmp(v, "off") ? -1 : (int)parse_num(v);
+        }
+        else if (!strcmp(argv[i], "--led") && i + 1 < argc) {
+            const char *v = argv[++i];
+            cfg_led_gpio = !strcmp(v, "off") ? -1 : (int)parse_num(v);
+        }
         else if (!strcmp(argv[i], "--rx-pull") && i + 1 < argc) {
             const char *v = argv[++i];
             cfg_rx_pull = !strcmp(v, "up") ? 2 : !strcmp(v, "down") ? 1 : 0;
@@ -3789,8 +4158,19 @@ int main(int argc, char **argv)
         else rc = cmd_attiny_inc(args[0], args[1], args[2], (const char **)(args + 3), nargs - 3);
     }
     else if (!strcmp(cmd, "loader")) {
-        if (nargs < 2) { ERR("loader <bootstrap.bin> <loader.bin> [payload1 ...]\n"); rc = 1; }
-        else rc = cmd_loader(args[0], args[1], (const char **)(args + 2), nargs - 2);
+        static const char *pl[255];
+        int npl, k;
+        if (nargs < 2) { ERR("loader <bootstrap.bin> <loader.bin> [payload|dir ...]\n"); rc = 1; }
+        else if ((npl = collect_payloads(args + 2, nargs - 2, pl, 255)) < 0) rc = 1;
+        else {
+            printf("%d payload%s:\n", npl, npl == 1 ? "" : "s");
+            for (k = 0; k < npl; k++) printf("  %2d  %s\n", k + 1, pl[k]);
+            rc = cmd_loader(args[0], args[1], pl, npl);
+        }
+    }
+    else if (!strcmp(cmd, "launch")) {
+        if (nargs < 2) { ERR("launch <bootstrap.bin> <loader_pi.bin> [payload|dir ...]\n"); rc = 1; }
+        else rc = cmd_launch(args[0], args[1], args + 2, nargs - 2);
     }
     else if (!strcmp(cmd, "run")) {
         if (nargs < 1) { ERR("run <file.bin> [addr]\n"); rc = 1; }

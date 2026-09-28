@@ -56,7 +56,8 @@ or run the ATtiny launcher.
 # whole launch, see 11-raspberry-pi.md (host/pi-setup.sh).
 cd host && make SHM=1
 
-# GB bootstrap + loader (+ headless test builds)
+# GB bootstrap + loaders (loader.bin for the ATtiny, loader_pi.bin for the
+# Raspberry Pi launcher) + headless test builds
 cd ../gb && make all tests
 
 # Audio-dumper payload (needs an upstream checkout, see 07-payloads.md)

@@ -32,7 +32,9 @@ menu launches:
 
 SELECT in a payload returns to the menu. An optional fourth payload, a save
 patcher, adds Mew or Celebi to a swapped-in Red/Blue/Yellow/Gold/Silver/Crystal,
-or enables Crystal's GS Ball event. All of them run on hardware.
+or enables Crystal's GS Ball event. All of them run on hardware. On the
+Raspberry Pi launcher the menu is a scrolling list of every payload in a
+directory, so there is no limit of three ([chapter 11](docs/11-raspberry-pi.md)).
 
 ## Just want to build one?
 
@@ -74,7 +76,8 @@ attiny/  the ATtiny85 launcher firmware (avra) + its generated data + sim harnes
 hardware/  the ATtiny85 IR board: schematic (PNG, SVG + Schemdraw source), photo
 host/    PC build + test tools: gbcpop (generates the ATtiny data; drives the
          launch against VBA on the test bench; the launch and Card Pop! on a
-         Raspberry Pi 3, set up by pi-setup.sh) + helpers
+         Raspberry Pi 3, set up by pi-setup.sh, as a service by
+         pi-install-service.sh) + helpers
 vba-ir-patch/  test bench: our IR files for VisualBoyAdvance 1.8.0
 payloads/      snake (our game), save-patcher (Mew / Celebi / GS Ball event),
                card-pop (optional: Mew / Venusaur into the TCG save)

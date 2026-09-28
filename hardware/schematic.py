@@ -14,7 +14,9 @@ U2 = ATtiny85 (DIP-8):
   PB0 (5) IR LED out, PB1 (6) IR receiver in (internal pull-up),
   PB2 (7) blue LED, PB4 (3) red LED, PB3 (2) free, PB5/RESET (1) reset button to GND
 J2 = optional Raspberry Pi GPIO header (2x20), used with U2 removed:
-  pin 2 +5 V, 6 GND, 11 GPIO17 (middle of R3a/R3b), 12 GPIO18 (= PB1 line)
+  pin 2 +5 V, 6 GND, 11 GPIO17 (middle of R3a/R3b), 12 GPIO18 (= PB1 line),
+  15 GPIO22 (= PB2 line: the blue status LED D1 through R1),
+  13 GPIO27 (= RESET line: SW1 to GND, the Pi's pull-up; shutdown button)
 """
 from pathlib import Path
 
@@ -70,18 +72,25 @@ with schemdraw.Drawing(file=str(Path(__file__).with_name('schematic.svg'))) as d
     elm.LED().down().label('D2\nred', loc='top')
     elm.Ground()
 
-    elm.Resistor().left().at(u2.PB2).label('R1  220 Ω')
-    elm.Line().left(10.5)
+    elm.Line().left(0.75).at(u2.PB2)
+    n_pb2 = elm.Dot().center                  # J2 GPIO22 joins here (Pi mode)
+    elm.Resistor().left().label('R1  220 Ω')
+    elm.Line().left(9.75)
     elm.LED().down().label('D1\nblue', loc='top')
     elm.Ground()
+    elm.Line().up(1.25).at(n_pb2)
+    elm.Tag(width=1.9).left().label('GPIO22')
 
     elm.Line().down(2.25).at(n_r3)
     elm.Tag(width=1.9).right().label('GPIO17')
 
     elm.NoConnect().at(u2.PB3)
     elm.Line().right(1.25).at(u2.RESET)
+    n_rst = elm.Dot().center                  # J2 GPIO27 joins here (Pi mode)
     elm.Button().down().label('SW1\nRESET', loc='bottom')   # push -> RESET low
     elm.Ground()
+    elm.Line().right(0.75).at(n_rst)
+    elm.Tag(width=1.9).right().label('GPIO27')
 
     # ------------------------------------------------------------------
     # U1A: transimpedance amplifier for the photodiode
@@ -197,6 +206,8 @@ with schemdraw.Drawing(file=str(Path(__file__).with_name('schematic.svg'))) as d
     j2 = elm.Ic(
         pins=[
             elm.IcPin(name='GND', pin='6', side='right'),
+            elm.IcPin(name='GPIO27', pin='13', side='right'),
+            elm.IcPin(name='GPIO22', pin='15', side='right'),
             elm.IcPin(name='GPIO18', pin='12', side='right'),
             elm.IcPin(name='GPIO17', pin='11', side='right'),
             elm.IcPin(name='5V', pin='2', side='right'),
@@ -209,6 +220,10 @@ with schemdraw.Drawing(file=str(Path(__file__).with_name('schematic.svg'))) as d
     elm.Tag(width=1.9).right().label('GPIO17')
     elm.Line().right(0.75).at(j2.GPIO18)
     elm.Tag(width=1.9).right().label('GPIO18')
+    elm.Line().right(0.75).at(j2.GPIO22)
+    elm.Tag(width=1.9).right().label('GPIO22')
+    elm.Line().right(0.75).at(j2.GPIO27)
+    elm.Tag(width=1.9).right().label('GPIO27')
     elm.Line().right(0.75).at(j2.GND)
     elm.Ground()
     elm.Label().at((27, -11)).label(

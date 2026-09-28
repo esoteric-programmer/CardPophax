@@ -185,7 +185,7 @@ must bring the payload).
 |---|---|---|---|
 | `L` | loader | `$D000`, 8 pages | the loader image (always raw: the bootstrap has no RLE) |
 | `F` | menu font | `$D800`, 3 pages | `first_code, count, count × 8` 1bpp rows (§8) |
-| `M` | menu text | `$DB00`, 2 pages | `{row, col, ASCII…, 0}*`, `$FF` (padded after `$FF` so its last ACK is never 1..3) |
+| `M` | menu text | `$DB00`, 2 pages (Pi: 3) | `{row, col, ASCII…, 0}*`, `$FF` (padded after `$FF` so its last ACK is never 1..3); Pi: then the payload list (§8) |
 | `N` | manifest | `$DE00`, 1 page | §6 |
 | `B` | payload body | `$C000`, 16 pages (4 KB) | the segments back to back |
 
@@ -240,7 +240,7 @@ this (robust) protocol.
 |---|---|---|---|
 | Bootstrap | `$C000‑$C1FF` (≤512 B, today 442 B; 493 B as `DEBUG` build) | bit layer + chunk RX (+ screen status in `DEBUG`) | Stage 0 |
 | **Loader image** | **WRAM bank 7, `$D000‑$D7FF`** (SVBK=7; `LOADER_MAX`) | the resident loader (~1 KB) | Stages 1–2 |
-| Menu buffers | bank 7, `$D800` font (3 pages), `$DB00` menu text (512 B) | decoded menu streams | Stage 1 |
+| Menu buffers | bank 7, `$D800` font (3 pages), `$DB00` menu text (512 B; 768 B in `loader_pi.bin`) | decoded menu streams | Stage 1 |
 | Manifest, stack | bank 7, `wManifest` `$DE00`; SP from `$DFFF` (bootstrap too, after SVBK=7) | | Stages 0–3 |
 | Staging buffer | bank 0, `$C000‑$CFFF` (4 KB) | received payload body, pre‑apply | Stage 2 |
 | Payload finals | per manifest (`$C000`, VRAM, …) | applied destinations | Stage 3 |
@@ -340,6 +340,31 @@ Right after the loader, the host sends two more streams:
   no window/sprites), SCX=SCY=0. The TCG's original LCDC is saved at loader entry
   and restored by the trampoline before `jp entry`.
 * Then `read_choice` polls A / B / Start -> `REQ id` 1 / 2 / 3.
+
+### The Raspberry Pi menu (`loader_pi.bin`)
+
+The Raspberry Pi launcher uses the same loader assembled with `-D PI_MENU`
+(`gb/loader_pi.bin`); the ATtiny's `loader.bin` is unchanged. Its menu stream
+continues after the `$FF` with the payload list, and the menu buffer is 3
+pages (`$DB00-$DDFF`, 768 B):
+
+```
+ menu  (ID 'M'):  { row(1) col(1) ASCII... 0 }*  $FF  count(1)  { ASCII... 0 } x count
+```
+
+* The static text (title, key hints) still comes from the host; the loader
+  draws the list itself on rows 6, 8 and 10 (arrow in column 1, name from
+  column 3, at most 17 characters) and `n/N` on row 13. Three names are
+  visible: the chosen one in the middle, clamped so the first is on the top
+  row and the last on the bottom row.
+* UP/DOWN move the arrow (repeating when held); a move redraws the four rows
+  from a buffer at the start of vblank, with the LCD on. **A** sends
+  `REQ id` = list position + 1 (1..count), so the host pads the stream until
+  its last ACK is not 1..count. The position (`wSel`, bank 7) survives a
+  payload that returns to the menu (§7a).
+* **SELECT** restarts the Game Boy: MBC, banks, IR port and sound as after
+  power-on, then from an HRAM stub (the loader itself is in WRAM bank 7) SVBK
+  to bank 1, the CGB boot register values (`A = $11`) and `jp $0100`.
 
 ### RLE (per chunk)
 

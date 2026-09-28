@@ -95,7 +95,8 @@ combination proven with the earlier Mystery Gift work was reused. Link timing
 on a different build — [chapter 5](05-loader-protocol.md) §9 and [chapter 8](08-history-and-lessons.md).
 
 **Status LEDs.** Blue D1 on PB2 through R1 (220 Ω) and red D2 on PB4 through
-R2 (330 Ω), about 8–9 mA each. What they show is described in [chapter 6](06-attiny-firmware.md).
+R2 (330 Ω), about 8–9 mA each. What they show is described in [chapter 6](06-attiny-firmware.md). In
+Raspberry Pi mode the blue one is driven from GPIO22 (see below).
 
 **Reset.** SW1 pulls RESET to GND. The ATtiny's internal pull-up on RESET
 (30–60 kΩ) is enough for this board; add an external 10 kΩ to +5 V only if
@@ -209,7 +210,7 @@ With J2 fitted, the board is driven by a Raspberry Pi running the host tool
 does the whole launch (Stages 0–3, [chapter 5](05-loader-protocol.md)) and the Card Pop! commands.
 **Use a Raspberry Pi 3 (B or B+)** with the RT image; OS, kernel and build are
 in [chapter 11](11-raspberry-pi.md). Other models are not supported. J2 is
-mounted so that the board plugs onto the Pi's 40-pin GPIO header; only four of
+mounted so that the board plugs onto the Pi's 40-pin GPIO header; only six of
 its pins are used:
 
 | J2 / Pi pin | Pi signal | Board net |
@@ -218,18 +219,26 @@ its pins are used:
 | 6 | GND | GND |
 | 11 | GPIO17 (BCM 17) | middle of R3a/R3b → IR LED, lit when high |
 | 12 | GPIO18 (BCM 18) | Q1 collector (same line as PB1), low when light is received |
+| 13 | GPIO27 (BCM 27) | RESET line: SW1 to GND, low while pressed (the Pi's pull-up) |
+| 15 | GPIO22 (BCM 22) | PB2 line → R1 → blue status LED D1, lit when high |
 
 **Before plugging the board onto a Pi:**
 
 * **Remove the ATtiny85 from its socket.** The Pi's GPIOs take at most 3.3 V.
   With the ATtiny in place, its internal pull-up on PB1 would put 5 V on
-  GPIO18, and PB0 would drive against GPIO17 — this can damage the Pi.
+  GPIO18, and PB0 and PB2 would drive against GPIO17 and GPIO22 — this can
+  damage the Pi.
 * **Do not power the board from J1 at the same time.** In Pi mode the board
   runs from the Pi's 5 V pin; a second supply on J1 would feed into the Pi.
 
 In Pi mode, GPIO17 drives the IR LED through R3b only (200 Ω at 3.3 V, about
 10 mA); R3a just ends at the empty socket. GPIO18 needs a pull-up to **3.3 V**
 — `gbcpop` enables the Pi's internal one, so none is fitted on the board.
+GPIO22 lights the blue LED through R1; at 3.3 V that is only about 2–3 mA,
+so it is dimmer than with the ATtiny, but clearly visible. The red LED is not
+connected to the Pi. SW1, the ATtiny's reset button, becomes the Pi's
+shutdown button on GPIO27; like the ATtiny's RESET it needs no resistor, since
+`gbcpop` enables the Pi's internal pull-up ([chapter 11](11-raspberry-pi.md)).
 
 ## Regenerating the schematic
 
