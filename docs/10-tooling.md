@@ -43,13 +43,17 @@ or run the ATtiny launcher.
   a "PROG-S2" on `/dev/ttyACM0`); adjust `PORT`/`PROG` in `attiny/Makefile`.
 * The IR board itself — schematic, parts list and assembly notes in
   `04-attiny-hardware.md`.
+* **Or**, instead of the ATtiny85 and the programmer: a **Raspberry Pi 3**
+  (B or B+) with the RT image, plugged onto the board's J2 —
+  `11-raspberry-pi.md`.
 
 ## Building it all
 
 ```sh
 # Host tool: generates the ATtiny data (the SHM build; it is also the
 # test-bench driver for VBA). The GPIO backends (plain `make`, PIGPIO=1,
-# WIRINGPI=1) are for a Raspberry Pi and untested with the loader.
+# WIRINGPI=1) are for a Raspberry Pi; plain `make` on a Pi 3 also does the
+# whole launch, see 11-raspberry-pi.md (host/pi-setup.sh).
 cd host && make SHM=1
 
 # GB bootstrap + loader (+ headless test builds)

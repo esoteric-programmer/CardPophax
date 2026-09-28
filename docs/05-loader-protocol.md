@@ -2,7 +2,7 @@
 
 A robust, timing‑forgiving IR protocol used **after** a small loader is resident
 in the Game Boy's RAM, to stream the loader, a menu and an arbitrary payload from
-the host (the ATtiny85 launcher, or `gbcpop` against VBA) to the Game Boy, and
+the host (the ATtiny85 launcher, or `gbcpop` on a Raspberry Pi or against VBA) to the Game Boy, and
 the menu choice back.
 
 It exists because the TCG's own Card Pop! protocol
@@ -68,7 +68,7 @@ last bit's space, then an idle gap (the *lead*) before the next byte.
 | mark | 50 µs / 48 µs | ~67 µs |
 | space 0 / 1 | 64 / 224 µs | mark‑to‑mark ~190 / ~490 µs |
 | lead before a byte | 800 µs | — |
-| receiver split | GB: `RX_THRESH` 9 counts ≈ 137 µs | host: 240 µs (gbcpop), 336 µs (ATtiny) |
+| receiver split | GB: `RX_THRESH` 9 counts ≈ 137 µs | host: 240 µs (gbcpop on VBA), 336 µs (ATtiny, gbcpop on a Pi) |
 
 * The GB receiver (`ir_recv_byte`) syncs on a byte by requiring `FRAME_IDLE`
   (26 polls, ~400 µs) of dark before the first mark, then measures 8 spaces;
@@ -97,7 +97,8 @@ last bit's space, then an idle gap (the *lead*) before the next byte.
 * All GB constants are loop counts at **CGB normal speed**: in the TCG, cmd 4
   runs inside `IR_Begin`'s single‑speed section, so our code runs at normal
   speed (a bootstrap for a game in double speed must switch down first).
-* In VBA the host's µs are GB‑clock µs (`cT`); on the ATtiny they are real µs.
+* In VBA the host's µs are GB‑clock µs (`cT`); on the ATtiny and on a Pi
+  (the BCM system timer) they are real µs.
 
 ---
 
@@ -403,5 +404,6 @@ ask again, n times), `GBCPOP_DEBUG_ACK` (log ACK windows).
 
 ## 11. Known limits
 
-See [`roadmap.md`](09-roadmap.md) §3: no whole‑payload CRC; streams ≤ 16 KB (7‑bit SEQ) and the body ≤ 4 KB (staging buffer); the
-GPIO backend of gbcpop has no mark/space layer yet.
+See [`roadmap.md`](09-roadmap.md) §3: no whole‑payload CRC; streams ≤ 16 KB (7‑bit SEQ) and the body ≤ 4 KB (staging buffer); of
+gbcpop's GPIO backends only the direct one (the default build) has the
+mark/space layer; pigpio and wiringPi speak only the Card Pop! stage.

@@ -2,13 +2,13 @@
 
 This project runs homebrew code on a stock Game Boy Color, using a retail
 *Pokémon Trading Card Game* cartridge, over the console's infrared port — driven
-by a standalone ATtiny85 with an IR LED and receiver. No flash cartridge, no
-link cable, no PC while it runs.
+by an IR LED and receiver on a small board, with either a standalone ATtiny85
+or a Raspberry Pi 3 as the launcher. No flash cartridge, no link cable.
 
 It works because the TCG's "Card Pop!" IR feature is built on a small
 remote-procedure-call layer: two TCG cartridges exchange their Card Pop! data by
 **reading, writing and calling** each other's memory ([chapter 2](02-tcg-cardpop-protocol.md)). Those RPCs
-take the address as a parameter, so a cooperating peer — here, our ATtiny — can
+take the address as a parameter, so a cooperating peer — here, our launcher — can
 use the same commands the game uses to place a small routine in the console's
 work RAM and ask the game to run it. This is the game's own IR mechanism, used
 as intended; the console and cartridge are unmodified and nothing is flashed.
@@ -49,13 +49,14 @@ both ends of the wire, so we replace the bit layer with a forgiving one
 * **`gb/`** — the code that runs on the Game Boy: the Stage-0 bootstrap, the
   resident loader (menu, transfer, relocate-and-jump), and the shared IR receive
   layer. SM83 assembly, built with rgbds.
-* **`attiny/`** + **`hardware/`** — the launcher itself: the ATtiny85
-  firmware (all data precomputed into flash) and the IR board it runs on
-  (chapters [4](04-attiny-hardware.md) and [6](06-attiny-firmware.md)). This is the main path; nothing else is needed at run time.
-* **`host/`** — `gbcpop`, the PC-side tool. On the PC it generates the ATtiny's
-  data (`attiny-inc`), and it is the **test bench**: it runs the same launch
-  against a patched VisualBoyAdvance, which is where the protocol was
-  developed, and where changes are checked before they are flashed.
+* **`attiny/`** + **`hardware/`** — the IR board and the ATtiny85 launcher:
+  its firmware, with all data precomputed into flash (chapters [4](04-attiny-hardware.md) and [6](06-attiny-firmware.md)).
+  Standalone: nothing else is needed at run time.
+* **`host/`** — `gbcpop`, the host tool. On a **Raspberry Pi 3** it is the
+  second launcher, driving the same board ([chapter 11](11-raspberry-pi.md)). On the PC it generates
+  the ATtiny's data (`attiny-inc`), and it is the **test bench**: it runs the
+  same launch against a patched VisualBoyAdvance, which is where the protocol
+  was developed, and where changes are checked before they go onto hardware.
 * **`vba-ir-patch/`** — the files that give VisualBoyAdvance an IR "cable" for
   that test bench ([chapter 3](03-vba-ir-bridge.md)).
 * **`payloads/`** — what gets launched: snake, the packaging of FIX94's audio
@@ -63,8 +64,8 @@ both ends of the wire, so we replace the bit layer with a forgiving one
 
 ## Status
 
-Proven end to end on real hardware (ATtiny85 + GBC), and runnable on the
-patched emulator as a test bench:
+Proven end to end on real hardware with both launchers (ATtiny85 + GBC,
+Raspberry Pi 3 B+ + GBC), and runnable on the patched emulator as a test bench:
 a small game, the Card Pop! gift and the audio dumper launch (the default
 menu), and so does the optional save patcher. The menu appears a few seconds
 after power-on; a payload follows a second or few after the button. SELECT in
@@ -72,13 +73,12 @@ a payload returns to the menu, so several payloads can run in turn without a
 restart; the ATtiny keeps no state and simply answers whichever side the GBC is
 on ([chapter 6](06-attiny-firmware.md)).
 
-`gbcpop` also has Raspberry Pi GPIO backends from the project's beginnings.
-They only speak the Card Pop! stage, not the loader protocol, and are untested
-with the current launcher. Driving the board from a Pi is optional future work
-(chapters [4](04-attiny-hardware.md) and [9](09-roadmap.md)), not a supported path.
+The **Raspberry Pi 3 launcher** is `gbcpop` on Raspberry Pi OS Lite (64-bit)
+with the official PREEMPT_RT kernel: the whole launch (Stages 0–3) and the
+Card Pop! commands, on the same board with the ATtiny removed ([chapter 11](11-raspberry-pi.md)).
 
 ## Reading order
 
 [Chapter 2](02-tcg-cardpop-protocol.md) (the TCG protocol) and [chapter 5](05-loader-protocol.md) (our link) are the core. [Chapter 3](03-vba-ir-bridge.md) is
 the emulator test bench, [chapter 4](04-attiny-hardware.md) the ATtiny board, [chapter 6](06-attiny-firmware.md) the firmware, [chapter 7](07-payloads.md)
-payloads. [Chapter 8](08-history-and-lessons.md) is the development history and the hardware lessons; [chapter 9](09-roadmap.md) is the roadmap; [chapter 10](10-tooling.md) is the tooling.
+payloads. [Chapter 8](08-history-and-lessons.md) is the development history and the hardware lessons; [chapter 9](09-roadmap.md) is the roadmap; [chapter 10](10-tooling.md) is the tooling; [chapter 11](11-raspberry-pi.md) is the Raspberry Pi 3 launcher.
