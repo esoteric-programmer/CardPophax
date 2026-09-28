@@ -2097,15 +2097,24 @@ static int cmd_upload(void)
 /* shm (VBA) backend only; timing constants co-tuned with              */
 /* gb/hardware.inc and attiny/main-tcg-loader.asm (docs/05 §2).         */
 /* ================================================================== */
-#ifdef USE_SHM
+/* The loader's mark/space link (docs/05) exists in the SHM build (VBA, GB
+ * clock) and in the direct GPIO backend (real time, the Pi's system timer).  */
+#if defined(USE_SHM) || (!defined(USE_PIGPIO) && !defined(USE_WIRINGPI))
+#define HAVE_MS_LINK 1
+#endif
+
+#ifdef HAVE_MS_LINK
 /* mark/space durations (microseconds) — must match gb/hardware.inc     */
 #define MS_MARK_US    50.0
 #define MS_SPACE0_US  64.0
 #define MS_SPACE1_US  224.0
 #define MS_HELLO_US   130.0
-#define MS_THRESH_US  240.0     /* GB->host split: ~190 / ~490 us marks   */
-#define MS_LEAD_US    800.0      /* schedule ahead of the GB clock         */
+#define MS_LEAD_US    800.0      /* idle before each byte (GB frame sync)  */
 #define MS_RX_TMO_US  30000.0
+#endif
+
+#ifdef USE_SHM
+#define MS_THRESH_US  240.0     /* GB->host split: ~190 / ~490 us marks   */
 
 static long long ms_mc(double us) { return (long long)(us / MC2US + 0.5); }
 
@@ -2269,6 +2278,120 @@ static int ms_wait_hello(double tmo_us)
     return 0;
 }
 
+#elif defined(HAVE_MS_LINK)
+/*
+ * The same link on real hardware (direct backend): host time is real time,
+ * read from the BCM system timer, so no pacing against a peer clock. Values
+ * as proven on the ATtiny (attiny/main-tcg-loader.asm): the GB's marks come
+ * ~190 ('0') / ~490 ('1') us apart, split at 336 us. Receiving times the
+ * light-ON edges only, so a detector that stretches its marks is harmless.
+ */
+#define MS_THRESH_US  336.0
+
+/* LED on for a mark at `*t`, off after MS_MARK; advance *t by mark + gap */
+static void ms_mark(uint32_t *t, double gap_us)
+{
+    wait_until(*t);
+    gp_write(1);
+    wait_until(*t + (uint32_t)MS_MARK_US);
+    gp_write(0);
+    *t += (uint32_t)(MS_MARK_US + gap_us);
+}
+
+static int ms_tx_byte(uint8_t b)
+{
+    uint32_t t;
+    int i;
+    gp_write(0);
+    t = now_us() + (uint32_t)MS_LEAD_US;
+    for (i = 7; i >= 0; i--)
+        ms_mark(&t, (b >> i) & 1 ? MS_SPACE1_US : MS_SPACE0_US);
+    ms_mark(&t, MS_SPACE0_US);             /* trailing mark bounds bit 0 */
+    wait_until(t);
+    g_stats.tx++;
+    return 0;
+}
+
+static void ms_idle(double us)
+{
+    gp_write(0);
+    wait_until(now_us() + (uint32_t)us);
+}
+
+static void ms_send_hello(void)
+{
+    uint32_t t;
+    gp_write(0);
+    t = now_us() + (uint32_t)MS_LEAD_US;
+    wait_until(t);
+    gp_write(1);
+    wait_until(t + (uint32_t)MS_HELLO_US);
+    gp_write(0);
+    t += (uint32_t)(MS_HELLO_US + MS_SPACE1_US);
+    wait_until(t);
+    gp_write(1);
+    wait_until(t + (uint32_t)MS_HELLO_US);
+    gp_write(0);
+}
+
+/* next light-ON edge before `deadline`; a mark already lit when we start is
+ * not an edge. Returns its time, or -1. */
+static long long ms_next_light_until(uint32_t deadline)
+{
+    int prev = gp_read(), lvl;
+    uint32_t t;
+    for (;;) {
+        lvl = gp_read();
+        t = now_us();
+        if (lvl && !prev) return (long long)t;
+        prev = lvl;
+        if ((int32_t)(t - deadline) >= 0) return -1;
+    }
+}
+
+static long long ms_next_light(double tmo_us)
+{
+    return ms_next_light_until(now_us() + (uint32_t)tmo_us);
+}
+
+/* decode the 8 mark-to-mark gaps after the first mark (at `prev`); the GB's
+ * gaps are <= ~0.5 ms, so 3 ms without a mark ends the byte */
+static int ms_rx_rest(long long prev)
+{
+    long long t;
+    int i, b = 0;
+    for (i = 0; i < 8; i++) {
+        t = ms_next_light_until((uint32_t)prev + 3000u);
+        if (t < 0) return -1;
+        b = (b << 1) | ((uint32_t)(t - prev) >= (uint32_t)MS_THRESH_US ? 1 : 0);   /* MSB first */
+        prev = t;
+    }
+    g_stats.rx++;
+    return b & 0xFF;
+}
+
+static int ms_rx_byte(void)
+{
+    long long prev = ms_next_light(MS_RX_TMO_US);
+    return prev < 0 ? -1 : ms_rx_rest(prev);
+}
+
+/* one byte whose first mark comes within `window_us` (an ACK window) */
+static int ms_rx_byte_gbtime(double window_us)
+{
+    long long prev = ms_next_light(window_us);
+    return prev < 0 ? -1 : ms_rx_rest(prev);
+}
+
+static int ms_wait_hello(double tmo_us)
+{
+    if (ms_next_light(tmo_us) < 0) return -1;   /* first mark */
+    if (ms_next_light(tmo_us) < 0) return -1;   /* second mark after long gap */
+    return 0;
+}
+#endif /* USE_SHM / HAVE_MS_LINK */
+
+#ifdef HAVE_MS_LINK
 /* Stage 0: upload a raw blob to $C000 via the Card Pop! RPC, then jump. */
 static int loader_stage0(const uint8_t *blob, int n)
 {
@@ -2845,7 +2968,7 @@ static int cmd_loader(const char *boot_path, const char *loader_path,
      * any time after the menu appears is safe (do_transfer waits for the line
      * to be idle before REQ; send_stream takes a REQ in place of the menu ACK). */
     printf("Stage 1: feeding %d-byte loader (chunked, ACKed)...\n", ln);
-    fprintf(stderr, "  >>> in VBA: when the menu appears, press A "
+    fprintf(stderr, "  >>> when the menu appears, press A "
                     "(payload 1) / B (2) / Start (3) <<<\n");
     ms_idle(20000.0);
     if (send_stream(loader, ln, TRIES, 0, ID_LOADER, 0) < 0) {   /* bootstrap has no RLE */
@@ -2892,13 +3015,13 @@ static int cmd_loader(const char *boot_path, const char *loader_path,
     }
 }
 #else
-static int cmd_payloadcheck(const char *p){ (void)p; ERR("payloadcheck needs the SHM build\n"); return 1; }
+static int cmd_payloadcheck(const char *p){ (void)p; ERR("payloadcheck needs the SHM or direct GPIO build\n"); return 1; }
 static int cmd_attiny_inc(const char *o, const char *b, const char *l, const char **p, int n)
-{ (void)o; (void)b; (void)l; (void)p; (void)n; ERR("attiny-inc needs the SHM build: make SHM=1\n"); return 1; }
+{ (void)o; (void)b; (void)l; (void)p; (void)n; ERR("attiny-inc needs the SHM or direct GPIO build\n"); return 1; }
 static int cmd_loader(const char *a, const char *b, const char **c, int d)
 {
     (void)a; (void)b; (void)c; (void)d;
-    ERR("the 'loader' command needs the SHM (VBA) build for now: make SHM=1\n");
+    ERR("the 'loader' command needs the SHM (VBA) or the direct GPIO build (plain make)\n");
     return 1;
 }
 #endif
@@ -3496,6 +3619,9 @@ static void usage(void)
 "\n"
 "  upload                install the resident bridge (payload.bin) and run it\n"
 "  run <file> [addr]     upload a raw WRAM image (default $C000), verify, jump\n"
+"  loader <bootstrap.bin> <loader.bin> [payload ...]\n"
+"                        full launch: bootstrap, loader, menu, then the payload\n"
+"                        picked on the GBC (A = 1st, B = 2nd, START = 3rd)\n"
 "  bridge <sub> ...      ping | header | read <bank> <addr> <len> |\n"
 "                        mapper <addr> <val> | halt\n"
 "  swap-dump <file>      upload, prompt for the cartridge swap, dump its SRAM\n"
@@ -3511,8 +3637,8 @@ static void usage(void)
 "                        the bit-cell period they imply — use this first\n"
 "\n"
 "options:\n"
-"  --tx <gpio>     IR LED GPIO, BCM numbering (default 18)\n"
-"  --rx <gpio>     IR detector GPIO, BCM numbering (default 23)\n"
+"  --tx <gpio>     IR LED GPIO, BCM numbering (default 17)\n"
+"  --rx <gpio>     IR detector GPIO, BCM numbering (default 18)\n"
 "  --tx-invert     the LED lights when the GPIO is low\n"
 "  --rx-invert     the detector reads low when light is present (the default)\n"
 "  --rx-active-high  the detector reads high when light is present\n"

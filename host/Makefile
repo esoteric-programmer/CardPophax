@@ -2,8 +2,9 @@
 #
 # On the PC, build it with SHM=1: that generates the ATtiny data
 # (`gbcpop attiny-inc`) and drives the VBA test bench (docs/03). The GPIO
-# backends below are for a Raspberry Pi from the project's beginnings; they only
-# speak the Card Pop! stage and are untested with the loader (optional/future).
+# backends below are for a Raspberry Pi. The direct one (plain `make`) does the
+# whole launch (`gbcpop loader`) and the Card Pop! commands on a Pi 3
+# (docs/11); pigpio and wiringPi speak only the Card Pop! stage.
 #
 #   make SHM=1           /dev/shm bridge to the patched VBA (PC).
 #   make                 direct /dev/mem backend — no libraries at all.
