@@ -1,7 +1,7 @@
 # 3. The VisualBoyAdvance IR bridge
 
 This is the project's **local test bench**, not a launch path. The launch
-itself is the ATtiny85 (chapters [4](04-attiny-hardware.md) and [6](06-attiny-firmware.md)). A changed bootstrap, loader or
+itself is the ATtiny85 (chapters [4](04-attiny-hardware.md) and [6](06-attiny-firmware.md)) or a Raspberry Pi 3 ([chapter 11](11-raspberry-pi.md)). A changed bootstrap, loader or
 payload is first run here, against the same GB code and the same wire frames
 the ATtiny will send, so mistakes show up before a build is flashed. To do
 that, we connect the IR port

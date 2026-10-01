@@ -1,0 +1,16 @@
+# The Raspberry Pi launcher as a service (docs/11-raspberry-pi.md), installed
+# by host/pi-install-service.sh: `gbcpop launch` from boot on, serving the TCG's
+# Card Pop! screen and the loader's menu. Log: journalctl -u gbcpop-launch -f
+[Unit]
+Description=CardPop!hax launcher (gbcpop launch)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gbcpop launch /usr/local/share/cardpop/bootstrap.bin /usr/local/share/cardpop/loader_pi.bin /usr/local/share/cardpop/payloads
+# a crash restarts it; the shutdown button ends it normally (the Pi powers off)
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

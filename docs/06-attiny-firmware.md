@@ -1,8 +1,8 @@
 # 6. ATtiny85 firmware
 
 `attiny/main-tcg-loader.asm` is the launcher: the whole launch, from an ATtiny85,
-with no PC at run time. (`gbcpop loader` does the same against VBA, as the
-test bench, [chapter 3](03-vba-ir-bridge.md).) Assembles
+with no PC at run time. (`gbcpop loader` does the same from a Raspberry Pi 3,
+[chapter 11](11-raspberry-pi.md), and against VBA as the test bench, [chapter 3](03-vba-ir-bridge.md).) Assembles
 with `avra`: about 4 KB of code and bootstrap/loader/menu data, plus the payloads.
 The default image (snake, card-pop, audio dumper on A, B, START) uses 7336 of the 8192
 bytes of flash; [chapter 7](07-payloads.md) lists other payload sets.

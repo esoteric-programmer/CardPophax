@@ -1,24 +1,30 @@
 # CardPop!hax
 
 *Homebrew on a stock Game Boy Color through the Pokémon TCG's infrared "Card
-Pop!", driven by a lone ATtiny85 — no flashcart, no link cable, no mods.*
+Pop!", driven by a lone ATtiny85 or a Raspberry Pi 3 — no flashcart, no link
+cable, no mods.*
 
 The *Pokémon Trading Card Game*'s "Card Pop!" IR feature exposes a remote
 read/write/call of the console's memory. This project uses it to place a small
 bootstrap in RAM, pull a resident loader over a custom IR link, show a menu,
-stream the chosen payload and jump to it — all from a standalone ATtiny85, with
-no PC, no flashcart and no link cable once the board is built.
+stream the chosen payload and jump to it — with no flashcart and no link cable.
 
 https://github.com/user-attachments/assets/29bf8663-e8c6-4c92-b796-cf61f9d05cbf
 
-**The ATtiny85 board is the project.** A PC is only needed to build the
-firmware and flash it. The same code also runs against a patched
-VisualBoyAdvance. That emulator path (`gbcpop` + `vba-ir-patch/`) is a local
-test bench, used to catch errors before a build goes onto the ATtiny, not a
-second way to launch. Driving the IR board from a Raspberry Pi instead of the
-ATtiny is optional and untested with the loader (future work, [chapter 9](docs/09-roadmap.md)).
+**Two supported launchers**, both driving the same IR board:
 
-Proven on real hardware (ATtiny85 + GBC). The default menu launches:
+* **ATtiny85** — standalone, no PC at run time; a PC is only needed to build
+  and flash the firmware.
+* **Raspberry Pi 3** (B or B+) with the RT image — Raspberry Pi OS Lite
+  (64-bit) and the official PREEMPT_RT kernel. `gbcpop` does the whole launch
+  and also the Card Pop! commands ([chapter 11](docs/11-raspberry-pi.md)).
+
+The same code also runs against a patched VisualBoyAdvance. That emulator path
+(`gbcpop` + `vba-ir-patch/`) is a local test bench, used to catch errors before
+a build goes onto real hardware, not a launch path.
+
+Proven on real hardware (ATtiny85 + GBC, Raspberry Pi 3 B+ + GBC). The default
+menu launches:
 * **A**: a small game (snake)
 * **B**: a Card Pop! gift: adds a Mew or Venusaur to the TCG's own save, as a
   Card Pop! would
@@ -28,11 +34,13 @@ Proven on real hardware (ATtiny85 + GBC). The default menu launches:
 
 SELECT in a payload returns to the menu. An optional fourth payload, a save
 patcher, adds Mew or Celebi to a swapped-in Red/Blue/Yellow/Gold/Silver/Crystal,
-or enables Crystal's GS Ball event. All of them run on hardware.
+or enables Crystal's GS Ball event. All of them run on hardware. On the
+Raspberry Pi launcher the menu is a scrolling list of every payload in a
+directory, so there is no limit of three ([chapter 11](docs/11-raspberry-pi.md)).
 
 ## Just want to build one?
 
-The whole write-up is chapters 01–10 below, but to build a working board:
+The whole write-up is chapters 01–11 below, but to build a working board:
 
 1. **Build the board** — schematic, parts and assembly: [chapter 04](docs/04-attiny-hardware.md).
 2. **Build and flash the firmware.** See [chapter 10](docs/10-tooling.md) for
@@ -58,6 +66,9 @@ There is no prebuilt `.hex` in the repo: `make flash` always reassembles from
 source with `avra`. Path A simply doesn't regenerate the payload data — the
 committed `loader_data.inc` is used as-is.
 
+**Or use a Raspberry Pi 3 instead of the ATtiny** (step 2): the RT image, the
+build and the launch are in [chapter 11](docs/11-raspberry-pi.md).
+
 ## Layout
 
 ```
@@ -66,7 +77,9 @@ gb/      Game Boy side: bootstrap, loader, receive layer, test ROM (SM83, rgbds)
 attiny/  the ATtiny85 launcher firmware (avra) + its generated data + sim harness
 hardware/  the ATtiny85 IR board: schematic (PNG, SVG + Schemdraw source), photo
 host/    PC build + test tools: gbcpop (generates the ATtiny data; drives the
-         launch against VBA on the test bench) + helpers
+         launch against VBA on the test bench; the launch and Card Pop! on a
+         Raspberry Pi 3, set up by pi-setup.sh, as a service by
+         pi-install-service.sh) + helpers
 vba-ir-patch/  test bench: our IR files for VisualBoyAdvance 1.8.0
 payloads/      snake (our game), save-patcher (Mew / Celebi / GS Ball event),
                card-pop (optional: Mew / Venusaur into the TCG save)
@@ -88,6 +101,7 @@ LICENSE  GPL-2.0-or-later
 | [08](docs/08-history-and-lessons.md) | History and lessons learned |
 | [09](docs/09-roadmap.md) | Ideas and limits |
 | [10](docs/10-tooling.md) | Tooling and third-party software |
+| [11](docs/11-raspberry-pi.md) | The Raspberry Pi 3 launcher (RT image, build, launch) |
 
 ## License
 

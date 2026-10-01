@@ -74,6 +74,7 @@ and would mean studying the game first; only the Pokémon titles are disassemble
   unacknowledged; a lost choice recovers (the loader asks once more after
   ~0.5 s, then returns to its menu), but a
   choice corrupted into another valid one launches the wrong payload. Rare.
-* **The Raspberry Pi path is incomplete.** The `gbcpop` GPIO backends speak only
-  the Card Pop! stage, not the loader link; the ATtiny is the supported
-  launcher (chapter 4).
+* **The Raspberry Pi launcher is Pi 3 only.** It needs `gbcpop`'s default
+  (direct `/dev/mem`) build and the RT kernel; the pigpio and wiringPi backends
+  speak only the Card Pop! stage, and the Pi 4 and 5 are not supported
+  (chapter 11).
